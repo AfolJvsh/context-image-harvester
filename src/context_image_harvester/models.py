@@ -30,7 +30,7 @@ class Candidate:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "Candidate":
+    def from_dict(cls, value: dict[str, Any]) -> Candidate:
         allowed = cls.__dataclass_fields__.keys()
         return cls(**{k: value.get(k, "") for k in allowed})
 

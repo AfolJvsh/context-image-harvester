@@ -76,8 +76,8 @@ class WikimediaProvider(Provider):
                 continue
             info = infos[0]
             ext = info.get("extmetadata") or {}
-            def em(key: str) -> str:
-                return clean((ext.get(key) or {}).get("value"))
+            def em(key: str, metadata=ext) -> str:
+                return clean((metadata.get(key) or {}).get("value"))
 
             license_name = em("LicenseShortName")
             license_url = em("LicenseUrl")

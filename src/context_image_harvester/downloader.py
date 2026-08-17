@@ -101,8 +101,8 @@ class CandidateDownloader:
             except OSError:
                 return DownloadResult(None, "stream_error")
 
+        old_limit = Image.MAX_IMAGE_PIXELS
         try:
-            old_limit = Image.MAX_IMAGE_PIXELS
             Image.MAX_IMAGE_PIXELS = self.max_pixels
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -143,10 +143,7 @@ class CandidateDownloader:
         except (UnidentifiedImageError, OSError, ValueError):
             return DownloadResult(None, "invalid_image")
         finally:
-            try:
-                Image.MAX_IMAGE_PIXELS = old_limit
-            except UnboundLocalError:
-                pass
+            Image.MAX_IMAGE_PIXELS = old_limit
 
         return DownloadResult(
             PreparedCandidate(

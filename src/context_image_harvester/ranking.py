@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import math
-from typing import Iterable
+from collections.abc import Iterable
 
 from PIL import Image
 
