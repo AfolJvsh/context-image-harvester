@@ -1,0 +1,58 @@
+name: Image Harvest
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt_file:
+        description: JSON prompt file in the repository
+        required: true
+        default: examples/prompts.example.json
+      per_item:
+        description: Candidates to keep per prompt
+        required: true
+        default: '8'
+      serpapi_max_searches:
+        description: Hard SerpApi request cap
+        required: true
+        default: '110'
+
+concurrency:
+  group: context-image-harvest
+  cancel-in-progress: true
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Harvest images
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+          SERPAPI_MAX_SEARCHES: ${{ inputs.serpapi_max_searches }}
+          WIKIMEDIA_USER_AGENT: ContextImageHarvester/1.0 (https://github.com/${{ github.repository }}; contact via GitHub)
+        run: |
+          python image_harvester.py "${{ inputs.prompt_file }}" \
+            --per-item "${{ inputs.per_item }}" \
+            --serpapi-max-searches "${{ inputs.serpapi_max_searches }}" \
+            --output image_review_pack
+
+      - name: Upload review pack
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-review-pack
+          path: |
+            image_review_pack/
+            image_review_pack.zip
+          if-no-files-found: warn
+          retention-days: 7
