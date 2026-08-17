@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "context-image-harvester"
+version = "1.0.0"
+description = "Quota-aware multi-source real-photo harvester with global duplicate detection, ranking, rights review, caching, and resumable runs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [{name = "AfolJvsh"}]
+dependencies = [
+  "requests>=2.31,<3",
+  "Pillow>=10,<13",
+  "numpy>=1.26,<3",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+clip = [
+  "torch>=2.2",
+  "open-clip-torch>=2.24",
+]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "build>=1.2",
+]
+
+[project.scripts]
+context-image-harvester = "context_image_harvester.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+exclude = [".venv", "dist", "build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

@@ -1,8 +1,13 @@
-.env
 .venv/
-venv/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.env
+.cache/
 image_review_pack/
 image_review_pack.zip
-.DS_Store
+*.review-pack.zip

@@ -2,16 +2,28 @@
   {
     "id": 1,
     "name": "Laptop Repair",
-    "prompt": "real professional photograph of a technician repairing a laptop on a clean electronics workbench"
+    "prompt": "real professional photograph of a technician repairing a laptop on a clean electronics workbench",
+    "search_queries": [
+      "laptop repair technician workbench",
+      "computer repair technician laptop"
+    ]
   },
   {
     "id": 2,
     "name": "Business WiFi",
-    "prompt": "real professional photograph of a network technician installing a wireless access point in a modern office"
+    "prompt": "real professional photograph of a network technician installing a wireless access point in a modern office",
+    "search_queries": [
+      "network technician wireless access point office",
+      "business wifi installation technician"
+    ]
   },
   {
     "id": 3,
     "name": "Cyber Security",
-    "prompt": "real professional photograph of a cybersecurity analyst working at multiple monitors in a modern office"
+    "prompt": "real professional photograph of a cybersecurity analyst working at multiple monitors in a modern security operations office",
+    "search_queries": [
+      "cybersecurity analyst office monitors",
+      "security operations center analyst"
+    ]
   }
 ]
