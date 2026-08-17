@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "name": "Laptop Repair",
+    "prompt": "real professional photograph of a technician repairing a laptop on a clean electronics workbench"
+  },
+  {
+    "id": 2,
+    "name": "Business WiFi",
+    "prompt": "real professional photograph of a network technician installing a wireless access point in a modern office"
+  },
+  {
+    "id": 3,
+    "name": "Cyber Security",
+    "prompt": "real professional photograph of a cybersecurity analyst working at multiple monitors in a modern office"
+  }
+]
