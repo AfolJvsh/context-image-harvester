@@ -1,0 +1,8 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+image_review_pack/
+image_review_pack.zip
+.DS_Store
