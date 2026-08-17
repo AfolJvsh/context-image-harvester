@@ -15,25 +15,42 @@ on:
         description: Hard SerpApi request cap
         required: true
         default: '110'
+      rights_mode:
+        description: review = web discovery allowed; strict = verified rights metadata only
+        type: choice
+        options: [review, strict]
+        default: review
+      enable_clip:
+        description: Enable optional CLIP semantic ranking
+        type: boolean
+        default: false
 
 concurrency:
   group: context-image-harvest
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   harvest:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-
+          cache: pip
       - name: Install dependencies
-        run: pip install -r requirements.txt
-
+        run: |
+          if [ "${{ inputs.enable_clip }}" = "true" ]; then
+            python -m pip install -e '.[clip]'
+          else
+            python -m pip install -e .
+          fi
+      - name: Estimate quota before harvest
+        run: context-image-harvester estimate "${{ inputs.prompt_file }}" --per-item "${{ inputs.per_item }}" --serpapi-max-searches "${{ inputs.serpapi_max_searches }}"
       - name: Harvest images
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
@@ -41,18 +58,19 @@ jobs:
           SERPAPI_MAX_SEARCHES: ${{ inputs.serpapi_max_searches }}
           WIKIMEDIA_USER_AGENT: ContextImageHarvester/1.0 (https://github.com/${{ github.repository }}; contact via GitHub)
         run: |
-          python image_harvester.py "${{ inputs.prompt_file }}" \
+          CLIP_FLAG=""
+          if [ "${{ inputs.enable_clip }}" = "true" ]; then CLIP_FLAG="--enable-clip"; fi
+          context-image-harvester harvest "${{ inputs.prompt_file }}" \
             --per-item "${{ inputs.per_item }}" \
             --serpapi-max-searches "${{ inputs.serpapi_max_searches }}" \
-            --output image_review_pack
-
-      - name: Upload review pack
+            --rights-mode "${{ inputs.rights_mode }}" \
+            --output image_review_pack \
+            $CLIP_FLAG
+      - name: Upload review ZIP
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-review-pack
-          path: |
-            image_review_pack/
-            image_review_pack.zip
+          path: image_review_pack.zip
           if-no-files-found: warn
           retention-days: 7

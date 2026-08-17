@@ -1,355 +1,301 @@
 # Context Image Harvester
 
-A general-purpose Python image harvester for building **prompt-aligned, globally unique real-photo review packs** from multiple online sources.
+A general-purpose Python tool for building **prompt-aligned, globally unique real-photo review packs** from Pexels, Google Images and Bing Images through SerpApi, and Wikimedia Commons.
 
-It was designed for workflows where you have many pages, products, services, topics, or content sections and want several candidate photographs for each one without reusing the same source image across the collection.
+The project is designed for websites, product catalogs, service pages, editorial planning, research collections, and other workflows where many topics need several candidate photographs without repeatedly selecting the same or near-identical image.
 
-## What it does
+> **Rights notice:** this is a discovery and review tool, not a copyright-clearance system. Pexels and Wikimedia expose useful provenance/license information. Arbitrary web results discovered through SerpApi must be reviewed at their source before publication.
 
-The harvester searches multiple providers in a quota-conscious order:
+## Highlights
 
-1. **Pexels** — licensed stock-photo candidates.
-2. **SerpApi Google Images** — broad web discovery.
-3. **Wikimedia Commons** — provenance-friendly fallback, throttled to respect Wikimedia API limits.
-4. **SerpApi Bing Images** — final backfill only when an item is still short.
+- Quota-aware order: **Pexels → Google only if needed → Wikimedia only if needed → Bing only if needed**.
+- Exact SHA-256 and global perceptual pHash duplicate rejection.
+- Bounded parallel image downloads; provider search requests stay controlled and sequential.
+- Search caching and resumable runs, including a persisted SerpApi request budget.
+- SSRF/private-network URL blocking and redirect validation for arbitrary web downloads.
+- Download byte caps, MIME checks, minimum dimensions, maximum pixel count, and Pillow decompression-bomb protection.
+- Structured rejection reasons and provider/cache metrics in `summary.json`.
+- `review` and `strict` rights modes.
+- Optional OpenCLIP semantic ranking.
+- Metadata, resolution, provider-trust, and visual-diversity scoring.
+- Separate `search_queries` and semantic `prompt` fields.
+- Interactive offline contact sheet with approve/reject state, filters, and `approved.json` / `rejected.json` export.
+- Installable CLI, Dockerfile, tests, CI, CodeQL, Dependabot, and release automation.
 
-For every downloaded candidate it can:
+## Installation
 
-- reject metadata containing obvious AI-generation, illustration, vector, render, logo, or similar non-photo terms;
-- reject images below the minimum practical dimensions;
-- enforce a maximum download size;
-- calculate an exact **SHA-256** hash;
-- calculate a perceptual **pHash**;
-- block exact duplicates globally;
-- block perceptual near-duplicates globally;
-- create a centered **16:10 review crop**;
-- keep a resized source copy;
-- write JSON and CSV manifests;
-- create an HTML contact sheet;
-- create a Markdown source/rights review file;
-- package the run into a ZIP archive.
-
-> **Important:** This is a discovery and review tool, not a copyright-clearance system. Pexels and Wikimedia provide useful license/provenance information. Images discovered through Google/Bing via SerpApi can come from arbitrary websites and must be rights-checked before publication.
-
-## Requirements
-
-- Python 3.11+ (3.12 recommended)
-- Internet connection
-- Optional but recommended:
-  - Pexels API key
-  - SerpApi API key
-
-Install dependencies:
+Python 3.11+ is required; Python 3.12 is recommended.
 
 ```bash
 python -m venv .venv
+source .venv/bin/activate       # Windows: .venv\\Scripts\\activate
+python -m pip install .
 ```
 
-macOS/Linux:
+For development:
 
 ```bash
-source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -e '.[dev]'
 ```
 
-Windows PowerShell:
+For optional CLIP semantic ranking:
 
-```powershell
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+```bash
+python -m pip install -e '.[clip]'
 ```
 
 ## API keys
 
-Never commit real API keys to the repository.
-
-### Local usage
-
-Set environment variables in your shell, or copy `.env.example` to `.env` and load the values through your preferred environment tooling.
-
-Required variable names:
+Copy `.env.example` for reference, then set values in your shell or environment manager:
 
 ```text
 PEXELS_API_KEY
 SERPAPI_API_KEY
-```
-
-Optional controls:
-
-```text
 SERPAPI_MAX_SEARCHES
 WIKIMEDIA_USER_AGENT
 ```
 
-`WIKIMEDIA_USER_AGENT` should identify your application and provide a contact URL or email. The example points to the GitHub repository.
+You may run with only a subset of providers, but fewer providers can leave prompts short. Never commit real keys.
 
-### GitHub Actions
+For GitHub Actions, add `PEXELS_API_KEY` and `SERPAPI_API_KEY` under **Settings → Secrets and variables → Actions**.
 
-In the repository, open:
-
-**Settings → Secrets and variables → Actions → New repository secret**
-
-Add:
-
-```text
-PEXELS_API_KEY
-SERPAPI_API_KEY
-```
-
-The included workflow reads these values securely from GitHub Actions secrets.
-
-## Prompt file format
-
-The easiest format is a JSON array:
+## Prompt format
 
 ```json
 [
   {
     "id": 1,
     "name": "Laptop Repair",
-    "prompt": "real professional photograph of a technician repairing a laptop on a clean electronics workbench"
-  },
-  {
-    "id": 2,
-    "name": "Business WiFi",
-    "prompt": "real professional photograph of a network technician installing a wireless access point in a modern office"
+    "prompt": "real professional photograph of a technician repairing a laptop on a clean electronics workbench",
+    "search_queries": [
+      "laptop repair technician workbench",
+      "computer repair technician laptop"
+    ]
   }
 ]
 ```
 
-The loader also understands the aliases:
+`prompt` describes semantic intent and is used by relevance scoring/CLIP. `search_queries` contains concise search-engine wording. If `search_queries` is omitted, the prompt is used.
 
-- `service` or `title` instead of `name`
-- `search_query` or `query` instead of `prompt`
-
-A simple JSON list of strings is supported as well.
+Aliases are supported: `service`/`title` for `name`, and `search_query`/`query` for `prompt`. A simple list of strings is also accepted.
 
 See [`examples/prompts.example.json`](examples/prompts.example.json).
 
-## Local usage
-
-Basic run:
+## Estimate before spending quota
 
 ```bash
-python image_harvester.py examples/prompts.example.json
-```
-
-Keep 8 unique candidates per prompt:
-
-```bash
-python image_harvester.py examples/prompts.example.json \
-  --per-item 8 \
-  --output image_review_pack
-```
-
-Limit SerpApi usage:
-
-```bash
-python image_harvester.py examples/prompts.example.json \
+context-image-harvester estimate examples/prompts.example.json \
   --per-item 8 \
   --serpapi-max-searches 50
 ```
 
-More candidate discovery per provider:
+Or use `--dry-run` on the harvest command:
 
 ```bash
-python image_harvester.py prompts.json \
-  --per-provider 40 \
-  --per-item 10
+context-image-harvester harvest prompts.json --per-item 8 --dry-run
 ```
 
-Stricter near-duplicate rejection:
+The estimate shows target image count, worst-case Google/Bing searches, and the configured hard paid-search ceiling. Actual usage can be lower because Pexels is attempted first and valid cached SerpApi results do not consume a new request in this tool.
+
+## Harvest
 
 ```bash
-python image_harvester.py prompts.json \
-  --near-duplicate-hamming 10
+context-image-harvester harvest examples/prompts.example.json \
+  --per-item 8 \
+  --output image_review_pack
 ```
 
-## CLI options
+The original entry point remains supported:
+
+```bash
+python image_harvester.py examples/prompts.example.json --per-item 8
+```
+
+### Useful options
 
 ```text
-prompts                       JSON prompt file
---output                      Output directory (default: image_review_pack)
---per-item                    Final candidates per prompt (default: 8)
---per-provider                Candidates requested from each provider (default: 25)
---near-duplicate-hamming      pHash Hamming distance treated as near-duplicate (default: 8)
---serpapi-max-searches        Hard SerpApi request ceiling (default: 110)
---max-download-mb             Reject downloads larger than this (default: 25 MB)
---timeout                     HTTP timeout in seconds (default: 35)
---keep-existing-output        Refuse to overwrite an existing output directory
+--per-item N                    final candidates per item (default 8)
+--per-provider N                search candidates requested per provider (default 25)
+--near-duplicate-hamming N      pHash duplicate threshold (default 8)
+--serpapi-max-searches N        paid-search hard ceiling (default 110)
+--max-download-mb N             candidate byte limit (default 25 MB)
+--max-pixels N                  decoded-image pixel limit (default 50,000,000)
+--download-workers N            concurrent image downloads (default 4)
+--cache-dir PATH                search cache location
+--cache-ttl-hours N             search cache lifetime (default 168)
+--rights-mode review|strict     source-rights policy
+--resume                        continue a prior output/state chain
+--enable-clip                   enable optional OpenCLIP semantic scoring
+--no-zip                        leave output directory without creating ZIP
+--dry-run                       estimate only; perform no provider requests/downloads
 ```
 
-## Provider strategy and SerpApi quota
+## Provider strategy and quota behavior
 
-The script intentionally does **not** query both SerpApi image engines for every prompt immediately.
-
-For each prompt it performs:
+For each item:
 
 ```text
 Pexels
-   +
-SerpApi Google Images (at most one search)
-   ↓
-Deduplicate / validate
-   ↓
-Enough candidates?
-   ├─ yes → next prompt
-   └─ no  → Wikimedia fallback
-              ↓
-            still short?
-              └─ SerpApi Bing Images backfill
+  │ enough valid/diverse candidates?
+  ├─ yes → rank/select/save
+  └─ no
+       ▼
+SerpApi Google Images
+  │ enough?
+  ├─ yes → rank/select/save
+  └─ no
+       ▼
+Wikimedia Commons
+  │ enough?
+  ├─ yes → rank/select/save
+  └─ no
+       ▼
+SerpApi Bing Images
 ```
 
-This makes a run much cheaper than blindly running two SerpApi searches for every item.
+In `strict` rights mode, SerpApi discovery providers are skipped completely, so paid searches are not spent on candidates that strict mode would reject.
 
-For example, 55 prompts that all fill from Pexels + Google use approximately **55 SerpApi searches**, not 440 searches.
+The SerpApi counter is persisted in `state.json`, so resuming the same run does not reset the configured safety ceiling.
 
-The `--serpapi-max-searches` option is a hard safety ceiling.
+## Wikimedia behavior
 
-## Wikimedia rate limiting
+Wikimedia is fallback-only. The client:
 
-The Wikimedia client is deliberately conservative:
+- identifies itself with `WIKIMEDIA_USER_AGENT`;
+- uses serial API requests;
+- waits between requests;
+- sends `maxlag=5`;
+- handles HTTP 429/503 and `Retry-After`;
+- temporarily backs off rather than repeatedly hammering Commons.
 
-- Commons is only used as a fallback.
-- API calls are serial.
-- A minimum pause is applied between Commons API calls.
-- `maxlag=5` is sent.
-- HTTP `429` / `503` responses read `Retry-After` where available.
-- A cooldown prevents repeated requests while Wikimedia is rate-limiting the client.
-- The User-Agent identifies the application and includes contact information.
+## Safety model
 
-If Wikimedia is unavailable, the run can continue using the other providers.
+Web-discovered image URLs are treated as untrusted input. The downloader rejects non-HTTP(S) schemes, localhost/private/link-local/reserved addresses, and unsafe redirect targets. It also applies byte, MIME, decoded-pixel, decompression, minimum-dimension, and redirect-count limits.
+
+This is defense in depth, not a perfect network sandbox. For high-trust environments, run the tool in an isolated container or runner with network egress controls. See [`SECURITY.md`](SECURITY.md).
+
+The output directory is recreated for non-resume runs and guards obvious dangerous paths such as `/`, the current directory, and the user's home directory. Always use a dedicated output folder.
+
+## Duplicate detection
+
+The tool performs global duplicate checks across the run:
+
+1. **SHA-256** for byte-identical files.
+2. **Perceptual pHash** for visually near-identical resized/recompressed variants.
+
+The pHash implementation is built into the project. Increase `--near-duplicate-hamming` to reject more visual similarity; decrease it if the filter is too aggressive.
+
+## Relevance and diversity ranking
+
+Every prepared candidate receives:
+
+- metadata relevance score;
+- resolution score;
+- provider-trust score;
+- semantic score (metadata fallback, or OpenCLIP when enabled);
+- visual-diversity contribution during greedy selection.
+
+CLIP is optional because its Torch/OpenCLIP dependencies are much larger than the default installation.
+
+## Rights modes
+
+### `review` (default)
+
+Uses all configured providers. SerpApi-discovered web results receive `rights_status: manual-review` and must be checked at the source.
+
+### `strict`
+
+Only accepts candidates from providers/results carrying verified provider or license metadata. Google/Bing discovery is skipped to avoid wasting quota.
+
+Rights status, license metadata, and `requires_manual_review` are written to the manifest.
+
+## Cache and resume
+
+Search responses are cached under `.cache/context-image-harvester` by default. Cached provider responses make reruns faster and can avoid fresh paid searches.
+
+Use:
+
+```bash
+context-image-harvester harvest prompts.json --output image_review_pack --resume
+```
+
+`state.json` tracks records, selected hashes, completed item IDs, and paid-search count. If a previous item was incomplete, resume removes that partial item cleanly and retries it rather than duplicating its existing candidates.
 
 ## Output
-
-A run creates a structure similar to:
 
 ```text
 image_review_pack/
 ├── images/
-│   ├── 001-laptop-repair-01.jpg
-│   ├── 001-laptop-repair-02.jpg
-│   └── ...
 ├── source_originals/
-│   └── ...
 ├── CONTACT_SHEET.html
 ├── DESCRIPTIONS.md
 ├── manifest.csv
 ├── manifest.json
-└── summary.json
+├── summary.json
+└── state.json              # resume bookkeeping; excluded from ZIP
 
 image_review_pack.zip
 ```
 
-### `images/`
+`source_originals/` contains normalized/resized source copies used for review; they are not literal untouched originals and are not proof of usage rights.
 
-Web/review-friendly centered 16:10 JPEG crops.
+`summary.json` includes completion counts, paid-search usage, provider searches, cache hits, total downloads, and structured rejection reasons such as `unsafe_url`, `too_large`, `bad_mime`, `phash_global_duplicate`, or `rights_not_verified`.
 
-### `source_originals/`
+## Interactive review
 
-Resized source copies used during validation. These are retained for review/reference, not as proof of usage rights.
-
-### `manifest.json` / `manifest.csv`
-
-Includes provider, title, source page, direct image URL, creator where available, license metadata, dimensions, SHA-256 and pHash.
-
-### `CONTACT_SHEET.html`
-
-Open it locally in a browser to review candidate images grouped by prompt.
-
-### `summary.json`
-
-Contains target counts, actual counts, per-item counts, SerpApi request usage, Wikimedia request count, and completion status.
+Open `CONTACT_SHEET.html` locally. Each candidate can be marked **Approve** or **Reject**. Review state is stored in browser `localStorage`, and the page can export `approved.json` or `rejected.json`. Filters are available for provider, rights status, and review status.
 
 ## GitHub Actions
 
-The repository includes `.github/workflows/harvest.yml`.
+### CI
 
-It is **manual-dispatch only** so pushing code does not accidentally consume API quota.
+`.github/workflows/ci.yml` runs on pull requests and `main` pushes across supported Python versions. It installs the development extra, runs Ruff, pytest, and a CLI estimate smoke test. It does **not** consume provider API quota.
 
-To run it:
+### Manual harvest
 
-1. Add the repository secrets described above.
-2. Open **Actions → Image Harvest → Run workflow**.
-3. Choose the prompt JSON path, candidates per item, and SerpApi cap.
-4. Run the workflow.
-5. Download the `image-review-pack` artifact when it completes.
+`.github/workflows/harvest.yml` is manual-dispatch only. Choose the prompt file, target count, SerpApi ceiling, rights mode, and optional CLIP ranking. The workflow uploads **only the final ZIP**, avoiding a duplicate folder-plus-ZIP artifact.
 
-## Safety notes
+### Security and maintenance
 
-### Output-directory deletion
+- CodeQL scans Python on PRs, `main`, and weekly.
+- Dependabot checks Python and GitHub Actions dependencies weekly.
+- Tagging `v*` builds the package and creates a GitHub release containing the distribution files.
 
-The script recreates its output directory at the beginning of a run. It includes guards against obvious dangerous paths such as `/`, your home directory, and the current repository directory.
+## Docker
 
-Still, use a dedicated output name such as:
-
-```text
-image_review_pack
-review_output
-project_images
+```bash
+docker build -t context-image-harvester .
+docker run --rm \
+  -e PEXELS_API_KEY \
+  -e SERPAPI_API_KEY \
+  -v "$PWD:/work" \
+  -w /work \
+  context-image-harvester harvest prompts.json --output image_review_pack
 ```
 
-Do not intentionally point `--output` at folders containing unrelated data.
+## Development
 
-### Network and disk usage
+```bash
+python -m pip install -e '.[dev]'
+ruff check .
+pytest
+```
 
-A large job can download many candidates that are later rejected. Keep adequate disk space and bandwidth available.
-
-The script rejects a candidate if its download exceeds `--max-download-mb` (25 MB by default).
-
-## Duplicate detection
-
-Two independent checks are used globally across the entire run:
-
-1. **SHA-256** — catches byte-identical files.
-2. **pHash** — catches visually similar versions such as resized/recompressed copies.
-
-The default near-duplicate threshold is a pHash Hamming distance of `8`. Increase it to reject more visually similar images; decrease it if the filter is too aggressive.
-
-## What this script does not do
-
-- It does not prove that an image was made by a camera rather than AI.
-- It does not provide legal clearance for arbitrary web images.
-- It does not perform CLIP/embedding semantic ranking.
-- It does not guarantee that every prompt reaches its requested candidate count.
-- It does not bypass provider quotas or rate limits.
-
-If a run finishes short, inspect `summary.json`, improve the prompt wording, increase `--per-provider`, add another licensed provider, or rerun after provider quota/rate limits reset.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/architecture.md`](docs/architecture.md).
 
 ## Protecting `main`
 
-For a public repository, a sensible GitHub Ruleset is:
+Recommended ruleset:
 
-1. Open **Settings → Rules → Rulesets → New branch ruleset**.
-2. Name it `Protect main`.
-3. Set enforcement to **Active**.
-4. Target the branch `main`.
-5. Enable:
-   - **Restrict deletions**
-   - **Block force pushes**
-   - **Require a pull request before merging**
-   - **Require approvals**: `1`
-   - **Dismiss stale pull request approvals when new commits are pushed**
-   - **Require conversation resolution before merging**
-6. Avoid adding bypass actors unless you intentionally want administrators to bypass the rules.
-7. Save the ruleset.
-
-This makes `main` PR-only and protects it from force-push/deletion.
-
-## Contributing
-
-Contributions are welcome. Please use a branch and open a pull request rather than pushing directly to `main`.
-
-When changing provider integrations, preserve these principles:
-
-- respect provider terms and rate limits;
-- never commit API keys;
-- keep global exact/perceptual duplicate protection;
-- retain source URLs and rights metadata;
-- fail safely when a provider becomes unavailable.
+- target `main`;
+- restrict deletions;
+- block force pushes;
+- require a pull request before merging;
+- require at least one approval;
+- dismiss stale approvals;
+- require conversation resolution;
+- require CI checks before merging.
 
 ## License
 
-The **software in this repository** is released under the MIT License. See [`LICENSE`](LICENSE).
-
-Image files discovered or downloaded by the software are **not** covered by this repository's MIT License. Their individual source licenses/rights apply.
+The software is MIT licensed. Harvested/discovered images retain their own source licenses and rights; the repository's MIT license does not cover those image assets.
