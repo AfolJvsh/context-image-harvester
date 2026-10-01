@@ -98,10 +98,7 @@ def metadata_score(item: Item, prepared: PreparedCandidate) -> float:
         + prepared.candidate.categories
     )
     observed = terms(observed_text)
-    if not desired or not observed:
-        base = 0.0
-    else:
-        base = len(desired & observed) / len(desired | observed)
+    base = 0.0 if not desired or not observed else len(desired & observed) / len(desired | observed)
 
     required = terms(" ".join(item.must_include))
     avoided = terms(" ".join(item.must_avoid))
