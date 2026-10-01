@@ -3,6 +3,24 @@
     "id": 1,
     "name": "Laptop Repair",
     "prompt": "real professional photograph of a technician repairing a laptop on a clean electronics workbench",
+    "context": {
+      "subject": "IT repair technician and open laptop",
+      "action": "diagnosing or repairing the laptop",
+      "setting": "clean electronics repair bench in a professional workshop",
+      "composition": "landscape website service image, hands and laptop clearly visible",
+      "visual_style": "natural camera photography, realistic lighting, not staged"
+    },
+    "must_include": [
+      "technician",
+      "laptop",
+      "repair tools"
+    ],
+    "must_avoid": [
+      "illustration",
+      "AI generated",
+      "text overlay",
+      "gaming setup"
+    ],
     "search_queries": [
       "laptop repair technician workbench",
       "computer repair technician laptop"
@@ -12,6 +30,20 @@
     "id": 2,
     "name": "Business WiFi",
     "prompt": "real professional photograph of a network technician installing a wireless access point in a modern office",
+    "context": {
+      "setting": "small or medium business office",
+      "action": "installing or configuring a ceiling or wall mounted wireless access point",
+      "usage": "business IT services website"
+    },
+    "must_include": [
+      "network technician",
+      "wireless access point"
+    ],
+    "must_avoid": [
+      "server rack only",
+      "illustration",
+      "router product shot"
+    ],
     "search_queries": [
       "network technician wireless access point office",
       "business wifi installation technician"
@@ -21,6 +53,16 @@
     "id": 3,
     "name": "Cyber Security",
     "prompt": "real professional photograph of a cybersecurity analyst working at multiple monitors in a modern security operations office",
+    "context": {
+      "subject": "cybersecurity analyst",
+      "setting": "real security operations workplace",
+      "composition": "professional editorial photo, visible human activity"
+    },
+    "must_avoid": [
+      "hooded hacker",
+      "binary code overlay",
+      "illustration"
+    ],
     "search_queries": [
       "cybersecurity analyst office monitors",
       "security operations center analyst"
