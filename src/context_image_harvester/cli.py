@@ -19,9 +19,16 @@ def _positive(value: str) -> int:
     return parsed
 
 
-def estimate(items_count: int, per_item: int, serpapi_cap: int, rights_mode: str = "review") -> dict:
-    google_max = 0 if rights_mode == "strict" else items_count
-    bing_max = 0 if rights_mode == "strict" else items_count
+def estimate(
+    items_count: int,
+    per_item: int,
+    serpapi_cap: int,
+    rights_mode: str = "review",
+    paid_query_count: int | None = None,
+) -> dict:
+    query_count = items_count if paid_query_count is None else max(0, paid_query_count)
+    google_max = 0 if rights_mode == "strict" else query_count
+    bing_max = 0 if rights_mode == "strict" else query_count
     return {
         "items": items_count,
         "target_images": items_count * per_item,
@@ -31,7 +38,10 @@ def estimate(items_count: int, per_item: int, serpapi_cap: int, rights_mode: str
         "configured_serpapi_cap": serpapi_cap,
         "maximum_paid_searches_this_run": min(serpapi_cap, google_max + bing_max),
         "rights_mode": rights_mode,
-        "note": "Actual usage can be lower because Pexels is attempted first and cached searches consume no new request.",
+        "note": (
+            "Actual usage can be lower because Pexels is attempted first, "
+            "SerpApi query variants are adaptive, and cached searches consume no new request."
+        ),
     }
 
 
@@ -58,9 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
     harvest.add_argument("--max-pixels", type=_positive, default=50_000_000)
     harvest.add_argument("--timeout", type=_positive, default=35)
     harvest.add_argument("--download-workers", type=_positive, default=4)
-    harvest.add_argument("--cache-dir", type=Path, default=Path(".cache/context-image-harvester"))
+    harvest.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path(".cache/context-image-harvester"),
+    )
     harvest.add_argument("--cache-ttl-hours", type=int, default=168)
-    harvest.add_argument("--rights-mode", choices=["review", "strict"], default="review")
+    harvest.add_argument(
+        "--rights-mode",
+        choices=["review", "strict"],
+        default="review",
+    )
     harvest.add_argument("--resume", action="store_true")
     harvest.add_argument("--dry-run", action="store_true")
     harvest.add_argument("--no-zip", action="store_true")
@@ -73,9 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Refuse to overwrite an existing output directory (legacy compatibility).",
     )
 
-    estimate_parser = sub.add_parser("estimate", help="Estimate target size and maximum SerpApi usage")
+    estimate_parser = sub.add_parser(
+        "estimate",
+        help="Estimate target size and maximum SerpApi usage",
+    )
     _add_common(estimate_parser)
-    estimate_parser.add_argument("--rights-mode", choices=["review", "strict"], default="review")
+    estimate_parser.add_argument(
+        "--rights-mode",
+        choices=["review", "strict"],
+        default="review",
+    )
     return parser
 
 
@@ -93,7 +118,6 @@ def _safe_output(path: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Backward compatibility with the original `python image_harvester.py prompts.json` CLI.
     if argv and argv[0] not in {"harvest", "estimate", "-h", "--help"}:
         argv.insert(0, "harvest")
     parser = build_parser()
@@ -104,11 +128,16 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         parser.error(str(exc))
 
+    paid_query_count = sum(
+        min(2, max(1, len(item.search_queries)))
+        for item in items
+    )
     usage = estimate(
         len(items),
         args.per_item,
         max(0, args.serpapi_max_searches),
         getattr(args, "rights_mode", "review"),
+        paid_query_count=paid_query_count,
     )
     if args.command == "estimate" or getattr(args, "dry_run", False):
         print(json.dumps(usage, indent=2))
@@ -144,10 +173,14 @@ def main(argv: list[str] | None = None) -> int:
         clip_pretrained=args.clip_pretrained,
     )
     try:
-        summary, zip_path = Harvester(config).run(items, create_zip=not args.no_zip)
+        summary, zip_path = Harvester(config).run(
+            items,
+            create_zip=not args.no_zip,
+        )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
     print(json.dumps(summary, indent=2))
     if zip_path:
         print(f"ZIP: {zip_path}")

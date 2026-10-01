@@ -35,12 +35,20 @@ class Harvester:
     def __init__(self, config: HarvesterConfig):
         self.config = config
         self.metrics = Metrics()
-        self.budget = RequestBudget(config.serpapi_max)
+        self.state = RunState(config.output / "state.json")
+        if config.resume:
+            self.state.load()
+
+        self.budget = RequestBudget(
+            config.serpapi_max,
+            used=self.state.serpapi_requests_used,
+            on_change=self._persist_budget,
+        )
         self.cache = SearchCache(config.cache_dir, config.cache_ttl_hours)
         self.session = requests.Session()
         user_agent = os.getenv(
             "WIKIMEDIA_USER_AGENT",
-            "ContextImageHarvester/1.0 (https://github.com/AfolJvsh/context-image-harvester; contact via GitHub)",
+            "ContextImageHarvester/1.1 (https://github.com/AfolJvsh/context-image-harvester; contact via GitHub)",
         )
         self.session.headers.update({"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"})
 
@@ -74,24 +82,27 @@ class Harvester:
         self.clip_scorer = (
             ClipScorer(config.clip_model, config.clip_pretrained) if config.enable_clip else None
         )
-        self.state = RunState(config.output / "state.json")
-        if config.resume:
-            self.state.load()
-            self.budget.used = min(self.budget.maximum, self.state.serpapi_requests_used)
 
         self.images_dir = config.output / "images"
         self.sources_dir = config.output / "source_originals"
         self.images_dir.mkdir(parents=True, exist_ok=True)
         self.sources_dir.mkdir(parents=True, exist_ok=True)
-        self.seen_urls: set[str] = set()
+        self.seen_urls: set[str] = set(self.state.seen_urls)
 
-    def _metadata_allowed(self, candidate: Candidate) -> bool:
+    def _persist_budget(self, used: int) -> None:
+        self.state.serpapi_requests_used = used
+        self.state.save()
+
+    def _metadata_allowed(self, item: Item, candidate: Candidate) -> bool:
         haystack = " ".join(
             clean(getattr(candidate, field))
             for field in ("title", "description", "categories", "page_url")
         ).lower()
         if any(term in haystack for term in AI_TERMS | NONPHOTO_TERMS):
             self.metrics.reject("metadata_nonphoto")
+            return False
+        if any(clean(term).lower() in haystack for term in item.must_avoid if clean(term)):
+            self.metrics.reject("context_must_avoid")
             return False
         if candidate.mime and candidate.mime not in {"image/jpeg", "image/png", "image/webp"}:
             self.metrics.reject("metadata_bad_mime")
@@ -108,28 +119,38 @@ class Harvester:
         if prepared.sha256 in self.state.sha256:
             self.metrics.reject("sha_duplicate")
             return False
-        if any(hamming(prepared.phash, old) <= self.config.phash_distance for old in self.state.phashes):
+        if any(
+            hamming(prepared.phash, old) <= self.config.phash_distance
+            for old in self.state.phashes
+        ):
             self.metrics.reject("phash_global_duplicate")
             return False
         return True
 
-    def _prepare_many(self, candidates: list[Candidate]) -> list[PreparedCandidate]:
+    def _prepare_many(
+        self,
+        item: Item,
+        candidates: list[Candidate],
+    ) -> list[PreparedCandidate]:
         eligible: list[Candidate] = []
         for candidate in candidates:
             if not candidate.image_url or candidate.image_url in self.seen_urls:
                 self.metrics.reject("duplicate_url")
                 continue
             self.seen_urls.add(candidate.image_url)
-            if self._metadata_allowed(candidate):
+            if self._metadata_allowed(item, candidate):
                 eligible.append(candidate)
 
         prepared: list[PreparedCandidate] = []
         with ThreadPoolExecutor(max_workers=max(1, self.config.download_workers)) as executor:
-            future_map = {executor.submit(self.downloader.prepare, candidate): candidate for candidate in eligible}
+            future_map = {
+                executor.submit(self.downloader.prepare, candidate): candidate
+                for candidate in eligible
+            }
             for future in as_completed(future_map):
                 try:
                     result = future.result()
-                except Exception as exc:  # defensive boundary for worker failures
+                except Exception as exc:
                     self.metrics.reject("worker_error")
                     print(f"[warn] candidate worker failed: {exc}", file=sys.stderr)
                     continue
@@ -139,7 +160,6 @@ class Harvester:
                 if self._globally_unique(result.prepared):
                     prepared.append(result.prepared)
 
-        # De-duplicate the pending pool itself, not only previously selected items.
         unique: list[PreparedCandidate] = []
         local_sha: set[str] = set()
         local_phash: list[str] = []
@@ -147,7 +167,10 @@ class Harvester:
             if candidate.sha256 in local_sha:
                 self.metrics.reject("sha_pool_duplicate")
                 continue
-            if any(hamming(candidate.phash, old) <= self.config.phash_distance for old in local_phash):
+            if any(
+                hamming(candidate.phash, old) <= self.config.phash_distance
+                for old in local_phash
+            ):
                 self.metrics.reject("phash_pool_duplicate")
                 continue
             local_sha.add(candidate.sha256)
@@ -155,7 +178,11 @@ class Harvester:
             unique.append(candidate)
         return unique
 
-    def _score_and_select(self, item: Item, prepared: list[PreparedCandidate]) -> list[PreparedCandidate]:
+    def _score_and_select(
+        self,
+        item: Item,
+        prepared: list[PreparedCandidate],
+    ) -> list[PreparedCandidate]:
         scored = annotate_scores(
             item,
             prepared,
@@ -179,77 +206,130 @@ class Harvester:
             source_name = base + "-source.jpg"
             (self.images_dir / review_name).write_bytes(prepared.review_bytes)
             (self.sources_dir / source_name).write_bytes(prepared.source_bytes)
+
             self.state.sha256.add(prepared.sha256)
             self.state.phashes.append(prepared.phash)
-            self.state.records.append({
-                "item_id": item.id,
-                "item_name": item.name,
-                "candidate": index,
-                "file": "images/" + review_name,
-                "source_original": "source_originals/" + source_name,
-                "provider": prepared.candidate.provider,
-                "title": prepared.candidate.title,
-                "creator": prepared.candidate.creator,
-                "source_page": prepared.candidate.page_url,
-                "direct_image_url": prepared.candidate.image_url,
-                "license": prepared.candidate.license,
-                "license_url": prepared.candidate.license_url,
-                "rights_status": prepared.candidate.rights_status,
-                "requires_manual_review": prepared.candidate.rights_status not in {
-                    "verified-provider",
-                    "verified-metadata",
-                },
-                "width": prepared.width,
-                "height": prepared.height,
-                "sha256": prepared.sha256,
-                "phash": prepared.phash,
-                "metadata_score": round(prepared.metadata_score, 5),
-                "resolution_score": round(prepared.resolution_score, 5),
-                "provider_score": round(prepared.provider_score, 5),
-                "semantic_score": round(prepared.semantic_score, 5),
-                "final_score": round(prepared.final_score, 5),
-                "search_query": item.prompt,
-            })
+            self.state.seen_urls.add(prepared.candidate.image_url)
+            self.state.records.append(
+                {
+                    "item_id": item.id,
+                    "item_name": item.name,
+                    "candidate": index,
+                    "file": "images/" + review_name,
+                    "source_original": "source_originals/" + source_name,
+                    "provider": prepared.candidate.provider,
+                    "title": prepared.candidate.title,
+                    "creator": prepared.candidate.creator,
+                    "source_page": prepared.candidate.page_url,
+                    "direct_image_url": prepared.candidate.image_url,
+                    "license": prepared.candidate.license,
+                    "license_url": prepared.candidate.license_url,
+                    "rights_status": prepared.candidate.rights_status,
+                    "requires_manual_review": prepared.candidate.rights_status not in {
+                        "verified-provider",
+                        "verified-metadata",
+                    },
+                    "width": prepared.width,
+                    "height": prepared.height,
+                    "sha256": prepared.sha256,
+                    "phash": prepared.phash,
+                    "metadata_score": round(prepared.metadata_score, 5),
+                    "resolution_score": round(prepared.resolution_score, 5),
+                    "provider_score": round(prepared.provider_score, 5),
+                    "semantic_score": round(prepared.semantic_score, 5),
+                    "photo_score": round(prepared.photo_score, 5),
+                    "final_score": round(prepared.final_score, 5),
+                    "semantic_prompt": item.semantic_prompt(),
+                    "search_queries": item.search_queries,
+                    "context": item.context,
+                    "must_include": item.must_include,
+                    "must_avoid": item.must_avoid,
+                }
+            )
         if len(selected) == self.config.per_item:
             self.state.completed_item_ids.add(item.id)
         self.state.serpapi_requests_used = self.budget.used
         self.state.save()
 
+    def _search_provider(
+        self,
+        provider,
+        item: Item,
+        prepared_pool: list[PreparedCandidate],
+    ) -> tuple[list[PreparedCandidate], list[PreparedCandidate]]:
+        selected = self._score_and_select(item, prepared_pool) if prepared_pool else []
+        if isinstance(provider, SerpApiProvider):
+            queries: list[str | None] = list(dict.fromkeys(item.search_queries))[:2]
+        else:
+            queries = [None]
+
+        for query in queries:
+            try:
+                if isinstance(provider, SerpApiProvider):
+                    candidates = provider.search_query(query or item.prompt, self.config.per_provider)
+                else:
+                    candidates = provider.search(item, self.config.per_provider)
+            except requests.RequestException as exc:
+                self.metrics.reject(f"provider_{provider.name}_error")
+                print(
+                    f"[warn] {provider.name} search failed for {item.name}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            except Exception as exc:
+                self.metrics.reject(f"provider_{provider.name}_error")
+                print(
+                    f"[warn] {provider.name} search failed for {item.name}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+
+            prepared_pool.extend(self._prepare_many(item, candidates))
+            selected = self._score_and_select(item, prepared_pool)
+            if len(selected) >= self.config.per_item:
+                break
+
+        return prepared_pool, selected
+
     def process_item(self, item: Item) -> int:
         if item.id in self.state.completed_item_ids:
-            count = sum(1 for record in self.state.records if int(record["item_id"]) == item.id)
-            print(f"{item.id:03d}. {item.name}: resume skip ({count}/{self.config.per_item})")
+            count = sum(
+                1
+                for record in self.state.records
+                if int(record["item_id"]) == item.id
+            )
+            print(
+                f"{item.id:03d}. {item.name}: resume skip "
+                f"({count}/{self.config.per_item})"
+            )
             return count
 
-        existing_rows = [record for record in self.state.records if int(record.get("item_id", -1)) == item.id]
+        existing_rows = [
+            record
+            for record in self.state.records
+            if int(record.get("item_id", -1)) == item.id
+        ]
         if existing_rows:
             self.state.drop_item(item.id, self.config.output)
+            self.seen_urls = set(self.state.seen_urls)
 
         prepared_pool: list[PreparedCandidate] = []
         selected: list[PreparedCandidate] = []
         for provider in self.providers:
             if self.config.rights_mode == "strict" and provider.name.startswith("serpapi-"):
                 continue
-            try:
-                candidates = provider.search(item, self.config.per_provider)
-            except requests.RequestException as exc:
-                self.metrics.reject(f"provider_{provider.name}_error")
-                print(f"[warn] {provider.name} search failed for {item.name}: {exc}", file=sys.stderr)
-                continue
-            except Exception as exc:
-                self.metrics.reject(f"provider_{provider.name}_error")
-                print(f"[warn] {provider.name} search failed for {item.name}: {exc}", file=sys.stderr)
-                continue
 
-            prepared_pool.extend(self._prepare_many(candidates))
-            # Test the actual diverse selection, not just raw pool length; cross-provider
-            # near-duplicates can otherwise make a seemingly full pool come up short.
-            selected = self._score_and_select(item, prepared_pool)
+            prepared_pool, selected = self._search_provider(
+                provider,
+                item,
+                prepared_pool,
+            )
             if len(selected) >= self.config.per_item:
                 break
 
         if not selected and prepared_pool:
             selected = self._score_and_select(item, prepared_pool)
+
         self._persist_selected(item, selected)
         print(
             f"{item.id:03d}. {item.name}: {len(selected)}/{self.config.per_item} | "
@@ -257,14 +337,19 @@ class Harvester:
         )
         return len(selected)
 
-    def finish(self, items: list[Item], create_zip: bool = True) -> tuple[dict, Path | None]:
+    def finish(
+        self,
+        items: list[Item],
+        create_zip: bool = True,
+    ) -> tuple[dict, Path | None]:
         counts = {item.id: 0 for item in items}
         for record in self.state.records:
             item_id = int(record["item_id"])
             if item_id in counts:
                 counts[item_id] += 1
+
         summary = {
-            "version": "1.0.0",
+            "version": "1.1.0",
             "items": len(items),
             "target_per_item": self.config.per_item,
             "target_total": len(items) * self.config.per_item,
@@ -276,13 +361,20 @@ class Harvester:
             "serpapi_requests_used": self.budget.used,
             "serpapi_request_cap": self.budget.maximum,
             "metrics": self.metrics.as_dict(),
-            "strategy": "Pexels -> Google only if needed -> Wikimedia only if needed -> Bing only if needed",
+            "strategy": (
+                "Pexels -> Google (up to 2 adaptive context queries) -> "
+                "Wikimedia -> Bing (up to 2 adaptive context queries)"
+            ),
         }
         write_reports(self.config.output, items, self.state.records, summary)
         zip_path = make_zip(self.config.output) if create_zip else None
         return summary, zip_path
 
-    def run(self, items: list[Item], create_zip: bool = True) -> tuple[dict, Path | None]:
+    def run(
+        self,
+        items: list[Item],
+        create_zip: bool = True,
+    ) -> tuple[dict, Path | None]:
         for item in items:
             self.process_item(item)
         return self.finish(items, create_zip=create_zip)

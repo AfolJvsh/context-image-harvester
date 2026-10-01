@@ -16,9 +16,10 @@ The project is designed for websites, product catalogs, service pages, editorial
 - Download byte caps, MIME checks, minimum dimensions, maximum pixel count, and Pillow decompression-bomb protection.
 - Structured rejection reasons and provider/cache metrics in `summary.json`.
 - `review` and `strict` rights modes.
-- Optional OpenCLIP semantic ranking.
-- Metadata, resolution, provider-trust, and visual-diversity scoring.
-- Separate `search_queries` and semantic `prompt` fields.
+- Optional OpenCLIP semantic + real-photo likelihood ranking.
+- Metadata, resolution, provider-trust, real-photo likelihood, and visual-diversity scoring.
+- Structured context (`context`, `must_include`, `must_avoid`) while keeping the original prompt format backward compatible.
+- Adaptive SerpApi query variants: a second search query is only spent when the first still leaves the item short.
 - Interactive offline contact sheet with approve/reject state, filters, and `approved.json` / `rejected.json` export.
 - Installable CLI, Dockerfile, tests, CI, CodeQL, Dependabot, and release automation.
 
@@ -59,14 +60,25 @@ You may run with only a subset of providers, but fewer providers can leave promp
 
 For GitHub Actions, add `PEXELS_API_KEY` and `SERPAPI_API_KEY` under **Settings → Secrets and variables → Actions**.
 
-## Prompt format
+## Prompt and context format
+
+The harvester still accepts the original `name` + `prompt` + `search_queries` shape. For better visual accuracy, each item may also provide structured context:
 
 ```json
 [
   {
     "id": 1,
     "name": "Laptop Repair",
-    "prompt": "real professional photograph of a technician repairing a laptop on a clean electronics workbench",
+    "prompt": "real professional photograph of a technician repairing a laptop",
+    "context": {
+      "subject": "IT repair technician and open laptop",
+      "action": "diagnosing or repairing the laptop",
+      "setting": "clean electronics repair bench",
+      "composition": "landscape website service image",
+      "visual_style": "natural camera photography, realistic lighting"
+    },
+    "must_include": ["technician", "laptop", "repair tools"],
+    "must_avoid": ["illustration", "AI generated", "text overlay"],
     "search_queries": [
       "laptop repair technician workbench",
       "computer repair technician laptop"
@@ -75,9 +87,11 @@ For GitHub Actions, add `PEXELS_API_KEY` and `SERPAPI_API_KEY` under **Settings 
 ]
 ```
 
-`prompt` describes semantic intent and is used by relevance scoring/CLIP. `search_queries` contains concise search-engine wording. If `search_queries` is omitted, the prompt is used.
+`prompt` is the high-level semantic intent. `context` adds structured scene/use information and is folded into semantic ranking. `must_include` boosts required concepts; `must_avoid` rejects matching metadata and penalizes unwanted concepts. `search_queries` remains concise search-engine wording. If it is omitted, the tool derives a compact query from the name, prompt, context, and required concepts.
 
-Aliases are supported: `service`/`title` for `name`, and `search_query`/`query` for `prompt`. A simple list of strings is also accepted.
+Pexels can use all supplied search queries. Paid Google/Bing discovery is adaptive: the first query is tried, candidates are downloaded/deduplicated/ranked, and a second distinct query is only used if the item is still short. At most two SerpApi query variants are used per provider per item.
+
+Aliases are supported: `service`/`title` for `name`, and `search_query`/`query` for `prompt`. `negative_terms` is accepted as an alias for `must_avoid`. A simple list of strings is also accepted.
 
 See [`examples/prompts.example.json`](examples/prompts.example.json).
 
@@ -155,7 +169,7 @@ SerpApi Bing Images
 
 In `strict` rights mode, SerpApi discovery providers are skipped completely, so paid searches are not spent on candidates that strict mode would reject.
 
-The SerpApi counter is persisted in `state.json`, so resuming the same run does not reset the configured safety ceiling.
+The SerpApi counter is persisted to `state.json` immediately before each paid request. A crash between search and item persistence therefore cannot silently reset the configured safety ceiling on resume.
 
 ## Wikimedia behavior
 
@@ -193,6 +207,7 @@ Every prepared candidate receives:
 - resolution score;
 - provider-trust score;
 - semantic score (metadata fallback, or OpenCLIP when enabled);
+- real-photo likelihood (provider/source prior by default, visual CLIP comparison when enabled);
 - visual-diversity contribution during greedy selection.
 
 CLIP is optional because its Torch/OpenCLIP dependencies are much larger than the default installation.
@@ -219,7 +234,7 @@ Use:
 context-image-harvester harvest prompts.json --output image_review_pack --resume
 ```
 
-`state.json` tracks records, selected hashes, completed item IDs, and paid-search count. If a previous item was incomplete, resume removes that partial item cleanly and retries it rather than duplicating its existing candidates.
+`state.json` tracks records, selected hashes, selected source URLs, completed item IDs, and paid-search count. Selected source URLs survive resume so already-used images are not downloaded again. If a previous item was incomplete, resume removes that partial item cleanly and retries it rather than duplicating its existing candidates.
 
 ## Output
 

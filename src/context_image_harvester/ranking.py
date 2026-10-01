@@ -16,6 +16,17 @@ PROVIDER_TRUST = {
     "serpapi-google": 0.45,
     "serpapi-bing": 0.40,
 }
+REAL_PHOTO_POSITIVE = [
+    "a real camera photograph",
+    "an authentic documentary photograph",
+    "a natural professional editorial photo",
+]
+REAL_PHOTO_NEGATIVE = [
+    "an AI generated image",
+    "a digital illustration",
+    "a 3d render",
+    "a vector graphic or cartoon",
+]
 
 
 class ClipScorer:
@@ -36,32 +47,68 @@ class ClipScorer:
         self.model = self.model.to(self.device).eval()
         self.tokenizer = open_clip.get_tokenizer(model_name)
 
-    def score(self, prompt: str, image_bytes: bytes) -> float:
+    def _image_features(self, image_bytes: bytes):
         torch = self.torch
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         image_tensor = self.preprocess(image).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            features = self.model.encode_image(image_tensor)
+            features /= features.norm(dim=-1, keepdim=True)
+        return features
+
+    def score(self, prompt: str, image_bytes: bytes) -> float:
+        torch = self.torch
+        image_features = self._image_features(image_bytes)
         text = self.tokenizer([prompt]).to(self.device)
         with torch.no_grad():
-            image_features = self.model.encode_image(image_tensor)
             text_features = self.model.encode_text(text)
-            image_features /= image_features.norm(dim=-1, keepdim=True)
             text_features /= text_features.norm(dim=-1, keepdim=True)
             cosine = (image_features @ text_features.T).item()
         return max(0.0, min(1.0, (cosine + 1.0) / 2.0))
 
+    def photo_score(self, image_bytes: bytes) -> float:
+        torch = self.torch
+        labels = REAL_PHOTO_POSITIVE + REAL_PHOTO_NEGATIVE
+        image_features = self._image_features(image_bytes)
+        text = self.tokenizer(labels).to(self.device)
+        with torch.no_grad():
+            text_features = self.model.encode_text(text)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+            logits = 100.0 * image_features @ text_features.T
+            probs = logits.softmax(dim=-1)[0]
+        positive = probs[: len(REAL_PHOTO_POSITIVE)].sum().item()
+        return max(0.0, min(1.0, positive))
+
 
 def metadata_score(item: Item, prepared: PreparedCandidate) -> float:
-    desired = terms(item.name + " " + item.prompt + " " + " ".join(item.search_queries))
-    observed = terms(
+    desired = terms(
+        item.name
+        + " "
+        + item.semantic_prompt()
+        + " "
+        + " ".join(item.search_queries)
+        + " "
+        + " ".join(item.must_include)
+    )
+    observed_text = (
         prepared.candidate.title
         + " "
         + prepared.candidate.description
         + " "
         + prepared.candidate.categories
     )
-    if not desired or not observed:
-        return 0.0
-    return len(desired & observed) / len(desired | observed)
+    observed = terms(observed_text)
+    base = 0.0 if not desired or not observed else len(desired & observed) / len(desired | observed)
+
+    required = terms(" ".join(item.must_include))
+    avoided = terms(" ".join(item.must_avoid))
+    required_bonus = 0.0
+    if required:
+        required_bonus = 0.20 * (len(required & observed) / len(required))
+    avoid_penalty = 0.0
+    if avoided:
+        avoid_penalty = 0.35 * (len(avoided & observed) / len(avoided))
+    return max(0.0, min(1.0, base + required_bonus - avoid_penalty))
 
 
 def resolution_score(prepared: PreparedCandidate) -> float:
@@ -79,19 +126,28 @@ def annotate_scores(
     clip_scorer: ClipScorer | None,
 ) -> list[PreparedCandidate]:
     out: list[PreparedCandidate] = []
+    semantic_prompt = item.semantic_prompt()
     for prepared in candidates:
         prepared.metadata_score = metadata_score(item, prepared)
         prepared.resolution_score = resolution_score(prepared)
         prepared.provider_score = PROVIDER_TRUST.get(prepared.candidate.provider, 0.25)
         prepared.semantic_score = (
-            clip_scorer.score(item.prompt, prepared.review_bytes) if clip_scorer else prepared.metadata_score
+            clip_scorer.score(semantic_prompt, prepared.review_bytes)
+            if clip_scorer
+            else prepared.metadata_score
         )
-        prepared.final_score = (
+        prepared.photo_score = (
+            clip_scorer.photo_score(prepared.review_bytes)
+            if clip_scorer
+            else min(1.0, prepared.provider_score + 0.20)
+        )
+        base_score = (
             semantic_weight * prepared.semantic_score
             + resolution_weight * prepared.resolution_score
             + provider_weight * prepared.provider_score
             + metadata_weight * prepared.metadata_score
         )
+        prepared.final_score = base_score * (0.70 + 0.30 * prepared.photo_score)
         out.append(prepared)
     return out
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "context-image-harvester"
-version = "1.0.0"
+version = "1.1.0"
 description = "Quota-aware multi-source real-photo harvester with global duplicate detection, ranking, rights review, caching, and resumable runs."
 readme = "README.md"
 requires-python = ">=3.11"
