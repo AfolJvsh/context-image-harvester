@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import tempfile
+import threading
 import warnings
 from dataclasses import dataclass
 
@@ -39,11 +40,30 @@ class CandidateDownloader:
         self.max_download_bytes = max_download_bytes
         self.max_pixels = max_pixels
         self.redirect_limit = redirect_limit
+        self._thread_local = threading.local()
+
+    def _session_for_thread(self):
+        # requests.Session is not documented as thread-safe. Keep provider traffic
+        # on the base session and give each download worker its own connection pool.
+        if not isinstance(self.session, requests.Session):
+            return self.session
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(self.session.headers)
+            session.auth = self.session.auth
+            session.proxies.update(self.session.proxies)
+            session.verify = self.session.verify
+            session.cert = self.session.cert
+            session.trust_env = self.session.trust_env
+            self._thread_local.session = session
+        return session
 
     def _get(self, url: str) -> requests.Response:
         current = validate_public_http_url(url)
+        session = self._session_for_thread()
         for _ in range(self.redirect_limit + 1):
-            response = self.session.get(
+            response = session.get(
                 current,
                 timeout=self.timeout,
                 stream=True,
@@ -95,24 +115,30 @@ class CandidateDownloader:
                         handle.write(chunk)
                     if total < 20_000:
                         return DownloadResult(None, "too_small_file")
-                    self.metrics.downloaded += 1
+                    self.metrics.record_download()
                     handle.seek(0)
                     blob = handle.read()
             except OSError:
                 return DownloadResult(None, "stream_error")
 
-        old_limit = Image.MAX_IMAGE_PIXELS
         try:
-            Image.MAX_IMAGE_PIXELS = self.max_pixels
+            # Do not mutate Pillow's process-global MAX_IMAGE_PIXELS from worker
+            # threads. Read dimensions from the header, enforce our own limit,
+            # and retain Pillow's default decompression-bomb protection.
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
                 with Image.open(io.BytesIO(blob)) as source:
-                    source.verify()
-                with Image.open(io.BytesIO(blob)) as source:
-                    source = ImageOps.exif_transpose(source).convert("RGB")
                     width, height = source.size
                     if width * height > self.max_pixels:
                         return DownloadResult(None, "too_many_pixels")
+                    source.verify()
+
+                with Image.open(io.BytesIO(blob)) as source:
+                    width, height = source.size
+                    if width * height > self.max_pixels:
+                        return DownloadResult(None, "too_many_pixels")
+                    source = ImageOps.exif_transpose(source).convert("RGB")
+                    width, height = source.size
                     if width < 900 or height < 560:
                         return DownloadResult(None, "too_small_dimensions")
                     image_phash = phash(source)
@@ -137,13 +163,10 @@ class CandidateDownloader:
                         source_image = source_image.resize((1800, new_height), Image.Resampling.LANCZOS)
                     source_bytes = io.BytesIO()
                     source_image.save(source_bytes, "JPEG", quality=90, optimize=True, progressive=True)
-            Image.MAX_IMAGE_PIXELS = old_limit
         except (Image.DecompressionBombError, Image.DecompressionBombWarning):
             return DownloadResult(None, "decompression_bomb")
         except (UnidentifiedImageError, OSError, ValueError):
             return DownloadResult(None, "invalid_image")
-        finally:
-            Image.MAX_IMAGE_PIXELS = old_limit
 
         return DownloadResult(
             PreparedCandidate(
