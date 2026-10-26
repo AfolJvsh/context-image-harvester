@@ -12,7 +12,7 @@ license = {file = "LICENSE"}
 authors = [{name = "AfolJvsh"}]
 dependencies = [
   "requests>=2.31,<3",
-  "Pillow>=10,<13",
+  "Pillow>=10,<14",
   "numpy>=1.26,<3",
 ]
 classifiers = [
